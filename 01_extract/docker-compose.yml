@@ -1,0 +1,178 @@
+version: "3.9"
+
+##############################
+#  Multi‑Service Data Stack  #
+##############################
+#  Apache NiFi     : 9090
+#  Apache Airflow  : 8080
+#  Elasticsearch   : 9200
+#  Kibana          : 5601
+#  PostgreSQL      : 5432
+#  pgAdmin 4       : 5050
+##############################
+
+services:
+  # --------------------------
+  # Apache NiFi
+  # --------------------------
+  nifi:
+    image: apache/nifi:latest
+    container_name: nifi
+    ports:
+      - "8443:8443" # <host>:<container>
+    environment:
+      - NIFI_WEB_HTTP_PORT=8443
+      - NIFI_WEB_HTTPS_PORT=8443
+      # OPTIONAL: basic‑auth via single‑user provider (2.x)
+      - SINGLE_USER_CREDENTIALS_USERNAME=admin
+      - SINGLE_USER_CREDENTIALS_PASSWORD=admin123
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8080/nifi-api/controller/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - data_net
+    volumes:
+      - nifi_state:/opt/nifi/nifi-current/state
+      - nifi_conf:/opt/nifi/nifi-current/conf
+
+  # --------------------------
+  # Apache Airflow (Celery‑Executor)
+  # --------------------------
+  airflow-db:
+    image: postgres:15
+    container_name: airflow-db
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    networks:
+      - data_net
+
+  airflow-redis:
+    image: redis:7
+    container_name: airflow-redis
+    networks:
+      - data_net
+
+  airflow:
+    image: apache/airflow:2.9.2-python3.12
+    container_name: airflow-webserver
+    depends_on:
+      - airflow-db
+      - airflow-redis
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-db/airflow
+      AIRFLOW__CELERY__BROKER_URL: redis://airflow-redis:6379/0
+      AIRFLOW__WEBSERVER__SECRET_KEY: "dev-secret-key-change-me"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin123
+      TZ: "UTC"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+    ports:
+      - "8080:8080"
+    command:
+      [
+        "bash",
+        "-c",
+        "airflow db upgrade && airflow users create --role Admin --username ${_AIRFLOW_WWW_USER_USERNAME} --password ${_AIRFLOW_WWW_USER_PASSWORD} --firstname Admin --lastname User --email admin@example.com && airflow celery worker & airflow webserver",
+      ]
+    networks:
+      - data_net
+
+  # --------------------------
+  # Elasticsearch & Kibana (8.x) works elasticsearch
+  # --------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - data_net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    container_name: kibana
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - data_net
+
+  # --------------------------
+  # PostgreSQL & pgAdmin 4 works
+  # --------------------------
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo123
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - data_net
+
+  pgadmin:
+    image: dpage/pgadmin4:9.3
+    container_name: pgadmin
+    depends_on:
+      - postgres
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.dev
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: "False" # enable multiple db connections UI
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    networks:
+      - data_net
+
+# --------------------------
+#  Networks & Volumes
+# --------------------------
+networks:
+  data_net:
+    driver: bridge
+
+volumes:
+  nifi_state:
+  nifi_conf:
+  airflow_db_data:
+  esdata:
+  pgdata:
+  pgadmin_data:
