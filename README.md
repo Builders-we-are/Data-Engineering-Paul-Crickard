@@ -91,4 +91,4 @@ Apache‑2.0.  Feel free to fork and adapt for your own learning!
  🔗 References
 
 * Paul Crickard – *Data Engineering with Python*, O’Reilly, 2nd ed., 2023.
-* Official repo: [https://github.com/PacktPublishing/Data‑Engineering‑With‑Python‑Second‑Edition](https://github.com/PacktPublishing/Data‑Engineering‑With‑Python‑Second‑Edition)
+* Official repo: [https://github.com/PacktPublishing/Data‑Engineering‑With‑Python‑Second‑Edition](https://github.com/PacktPublishing/Data-Engineering-with-Python)
