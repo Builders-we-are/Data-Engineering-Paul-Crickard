@@ -1,0 +1,263 @@
+version: "3.9"
+
+############################################
+#  Single‑User Data Platform + Airflow     #
+############################################
+#  NiFi           : 8443 (HTTPS)
+#  Kafka          : 9092 (broker)
+#  Zookeeper      : 2181
+#  Spark Master   : 7077 (cluster) / 8088 (UI)
+#  Spark Worker   : 8089 (UI)
+#  PostgreSQL     : 5432 (demo DB)
+#  Airflow        : 8081 (web UI)  ← NEW
+#  Elasticsearch  : 9200
+#  Kibana         : 5601
+############################################
+
+networks:
+  data_net:
+    driver: bridge
+
+volumes:
+  nifi_state:
+  nifi_conf:
+  kafka_data:
+  zk_data:
+  esdata:
+  pgdata:
+  airflow_db_data:
+  airflow_dags:
+  airflow_logs:
+  airflow_plugins:
+
+services:
+  #################################
+  # Apache NiFi (single‑user auth) #
+  #################################
+  nifi:
+    image: apache/nifi:latest
+    container_name: nifi
+    ports:
+      - "8443:8443"
+    environment:
+      - NIFI_WEB_HTTP_PORT=8443
+      - NIFI_WEB_HTTPS_PORT=8443
+      - SINGLE_USER_CREDENTIALS_USERNAME=admin
+      - SINGLE_USER_CREDENTIALS_PASSWORD=admin123
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "https://localhost:8443/nifi-api/controller/health",
+          "--insecure",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - nifi_state:/opt/nifi/nifi-current/state
+      - nifi_conf:/opt/nifi/nifi-current/conf
+    networks:
+      - data_net
+
+  #############################
+  # Kafka & Zookeeper (Bitnami)
+  #############################
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    container_name: zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+    volumes:
+      - zk_data:/bitnami/zookeeper
+    networks:
+      - data_net
+
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    networks:
+      - data_net
+
+  #############################
+  # Apache Spark (Bitnami 3.5) #
+  #############################
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    ports:
+      - "7077:7077" # cluster port
+      - "8088:8080" # master UI
+    networks:
+      - data_net
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    container_name: spark-worker
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_WEBUI_PORT=8081
+      - SPARK_WORKER_MEMORY=2G
+    ports:
+      - "8089:8081" # worker UI
+    networks:
+      - data_net
+
+  #############################
+  # Demo PostgreSQL 15 DB      #
+  #############################
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo123
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - data_net
+
+  ############################################
+  # Airflow metadata DB (Postgres, internal)  #
+  ############################################
+  airflow-db:
+    image: postgres:15
+    container_name: airflow-db
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    networks:
+      - data_net
+
+  ############################################
+  # Airflow bootstrap (one‑shot)             #
+  ############################################
+  airflow-init:
+    image: apache/airflow:2.9.2-python3.12
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+      AIRFLOW__WEBSERVER__SECRET_KEY: dev_secret_key
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin123
+    volumes:
+      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: >-
+      bash -c "\
+        airflow db migrate && \
+        airflow users create \
+          --username admin \
+          --password admin123 \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com && \
+        echo '✅ Airflow DB initialized'"
+    restart: "no"
+    networks:
+      - data_net
+    depends_on:
+      - airflow-db
+
+  ############################################
+  # Airflow core services                    #
+  ############################################
+  airflow-webserver:
+    image: apache/airflow:2.9.2-python3.12
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+      AIRFLOW__WEBSERVER__SECRET_KEY: dev_secret_key
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin123
+    volumes:
+      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    ports:
+      - "8081:8080" # Host 8081 → container 8080
+    command: airflow webserver
+    networks:
+      - data_net
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.2-python3.12
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    volumes:
+      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: airflow scheduler
+    networks:
+      - data_net
+
+  #################################
+  # Elasticsearch 8.12 & Kibana   #
+  #################################
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - data_net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    container_name: kibana
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - data_net

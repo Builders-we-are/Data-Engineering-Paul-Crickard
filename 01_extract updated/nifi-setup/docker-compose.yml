@@ -1,0 +1,48 @@
+version: "3.9"
+
+volumes:
+  nifi_state:
+  nifi_conf:
+  registry_state:
+
+networks:
+  data_net:
+
+services:
+  nifi:
+    image: apache/nifi:latest
+    container_name: devnifi
+    ports:
+      - "8443:8443" # HTTPS only
+    environment:
+      NIFI_WEB_HTTPS_PORT: 8443
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: admin123admin123
+    volumes:
+      - nifi_state:/opt/nifi/nifi-current/state
+      - nifi_conf:/opt/nifi/nifi-current/conf
+    healthcheck:
+      # NiFi must be fully started before this returns 200
+      test: >
+        curl -k -sf https://localhost:8443/nifi-api/flow/status
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - data_net
+
+  registry:
+    image: apache/nifi-registry:latest
+    container_name: nifi-registry
+    ports:
+      - "18080:18080" # HTTPS only
+    environment:
+      NIFI_REGISTRY_WEB_HTTPS_PORT: 18080
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: admin123
+    volumes:
+      - registry_state:/opt/nifi-registry
+    restart: unless-stopped
+    networks:
+      - data_net
